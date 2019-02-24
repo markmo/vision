@@ -5,7 +5,10 @@ from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import pandas as pd
+import seaborn as sb
 from sklearn.metrics import accuracy_score, auc, confusion_matrix, roc_curve
+from sklearn.metrics.classification import unique_labels
 
 
 class ExperimentReport(object):
@@ -69,14 +72,14 @@ class AssessmentReport(ExperimentReport):
     def __init__(self, pre_dir='report', pdf_name=''):
         super().__init__(pre_dir, pdf_name)
 
-    def roc_auc(self, y_score, y_true, figsixe=(8, 5)):
+    def roc_auc(self, y_score, y_true, figsize=(8, 5)):
         tpr, fpr, _ = roc_curve(y_true=y_true, y_score=1 - y_score)
         roc_auc = auc(fpr, tpr)
         if roc_auc < 0.5:
             tpr, fpr, _ = roc_curve(y_true=y_true, y_score=y_score)
             roc_auc = auc(fpr, tpr)
 
-        fig = plt.figure(figsize=figsixe)
+        fig = plt.figure(figsize=figsize)
         plt.plot(fpr, tpr, label='ROC Curve (area = %0.2f)' % roc_auc)
         plt.plot([0, 1], [0, 1], 'k--')
         plt.xlim([0.0, 1.0])
@@ -88,6 +91,7 @@ class AssessmentReport(ExperimentReport):
         self.add_page(fig)
         return fig
 
+    # noinspection PyUnresolvedReferences
     def plot_confusion_matrix(self, confusion_mat, classes, normalize=False, figsize=(8, 5),
                               title='Confusion Matrix', color_map=plt.cm.Blues):
         """
@@ -109,7 +113,8 @@ class AssessmentReport(ExperimentReport):
         else:
             print('Confusion Matrix without normalization')
 
-        fig = plt.figure(confusion_mat, interpolation='nearest', cmap=color_map)
+        fig = plt.figure(figsize=figsize)
+        plt.imshow(confusion_mat, interpolation='nearest', cmap=color_map)
         plt.title(title)
         plt.colorbar()
         tick_marks = np.arange(len(classes))
@@ -150,3 +155,61 @@ def evaluate_classifier(y_true, y_score, pdf_report, idx_class=None):
     recall1 = Counter()
     recall5 = Counter()
 
+    y_p_n = y_score_top_n.transpose([1, 0, 2])
+    y_top_n_pred = np.array(y_p_n)[:, :, 0]
+    top_5_pred = y_top_n_pred[:5].T
+    top_1_pred = y_top_n_pred[:1].T
+    for i in range(n_samples):
+        if y_true[i] in top_1_pred[i]:
+            recall1[y_true[i]] += 1
+            recall5[y_true[i]] += 1
+        elif y_true[i] in top_5_pred[i]:
+            recall5[y_true[i]] += 1
+
+    # pred_table = pd.DataFrame(np.concatenate([y_true[:, None], top_5_pred], axis=1),
+    #                           columns=['lb', 'p1', 'p2', 'p3', 'p4', 'p5'])
+    # print(pred_table)
+    dist_r5_r1 = pd.DataFrame(columns=['label', 'n_samples', 'r1', 'r5', 'recall1', 'recall5'])
+    for i, (k, v) in enumerate(test_dist.most_common()):
+        dist_r5_r1.loc[i] = [k, v, recall1[k], recall5[k], recall1[k] / v, recall5[k] / v]
+
+    top_n_acc = list(map(lambda xs: accuracy_score(y_true, xs, normalize=True), y_top_n_pred))
+    top_n_acc_cum = top_n_acc.copy()
+    n = len(top_n_acc)
+    for i in range(1, n + 1):
+        top_n_acc_cum += np.concatenate([[0] * i, top_n_acc[:-i]])
+
+    sb.set()
+    sb.set_style('dark')
+    fig, ax1 = plt.subplots(figsize=(12, 15))
+    plt.subplots_adjust(left=0.4, top=0.95, bottom=0.05)
+    ax2 = ax1.twiny()
+    ax2.set_xlabel('SET2', color='b')
+    sb.barplot(x='n_samples', y='label', data=dist_r5_r1, ax=ax1, palette='Blues_d')
+    sb.pointplot(x='recall1', y='label', data=dist_r5_r1, ax=ax2, linestyles='-', color='r')
+    sb.pointplot(x='recall5', y='label', data=dist_r5_r1, ax=ax2, linestyles='-', color='b')
+    pdf_report.add_page(fig)
+    plt.close()
+
+    fig, ax1 = plt.subplots(figsize=None)
+    n = 10
+    ay = top_n_acc[:n]
+    tx1 = 'top_n_acc:\n' + str(ay) + '\n'
+    sb.barplot(x=list(range(1, 11)), y=ay, palette='Blues_d', ax=ax1)
+    pdf_report.add_page(fig)
+    plt.close()
+
+    print('top_5_acc_cum:', top_n_acc_cum[:10])
+    fig, ax1 = plt.subplots(figsize=None)
+    n = 10
+    ay = top_n_acc_cum[:n]
+    tx2 = 'top_n_acc_cum:\n' + str(ay) + '\n'
+    sb.barplot(x=list(range(1, 11)), y=ay, palette='Blues_d', ax=ax1)
+    pdf_report.add_page(fig)
+    plt.close()
+
+    tx3 = 'Top 5 Accuracy: ' + str(ay[4]) + '\n'
+    pdf_report.add_simple_text_page(text=(tx1 + tx2 + tx3), figsize=(10, 5))
+    confusion_mat = confusion_matrix(y_true=y_true, y_pred=top_1_pred)
+    pdf_report.plot_confusion_matrix(confusion_mat, figsize=(20, 20), classes=unique_labels(y_true, top_1_pred))
+    return top_n_acc_cum[:5]
